@@ -16,42 +16,71 @@ import SceneKit
 
 struct ContentView: View {
     @StateObject private var monitor = QRTLColdFusionMonitor()
-    @State private var selectedSection: PipelineSection = .latticePressure
 
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
                 latticeSceneView
-                    .frame(height: 260)
+                    .frame(height: 220)
 
                 summaryBar
 
-                Picker("Section", selection: $selectedSection) {
-                    ForEach(PipelineSection.allCases) { section in
-                        Text(section.rawValue).tag(section)
-                    }
-                }
-                .pickerStyle(.menu)
-                .padding(.horizontal)
-                .padding(.top, 8)
+                fusionThresholdBar
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+                    .padding(.bottom, 4)
+
+                Divider()
 
                 List {
-                    Section {
-                        ForEach(monitor.stages(in: selectedSection)) { stage in
-                            StageRow(stage: stage)
+                    ForEach(PipelineSection.allCases) { section in
+                        let sectionStages = monitor.stages(in: section)
+                        if !sectionStages.isEmpty {
+                            Section {
+                                ForEach(sectionStages) { stage in
+                                    StageRow(stage: stage)
+                                }
+                            } header: {
+                                Text(section.rawValue)
+                            }
                         }
-                    } header: {
-                        Text(selectedSection.rawValue)
                     }
                 }
                 .listStyle(.insetGrouped)
-
-                inputControls
             }
             .navigationTitle("QRTL Cold Fusion Pipeline")
             .navigationBarTitleDisplayMode(.inline)
         }
         .navigationViewStyle(.stack)
+    }
+
+    // MARK: Fusion threshold bar
+
+    private var fusionThresholdBar: some View {
+        let progress = monitor.fusionThresholdProgress
+        let barColor: Color = progress > 0.85 ? .green : (progress > 0.4 ? .orange : .red)
+
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Fusion Threshold").font(.caption.bold())
+                Spacer()
+                Text(String(format: "%.2f / 28.4 MeV  (%.0f%%)",
+                            monitor.effectiveTransitionEnergyMeV, progress * 100.0))
+                    .font(.caption.monospaced())
+                    .foregroundColor(barColor)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color(uiColor: .tertiarySystemFill))
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(barColor)
+                        .frame(width: max(4, geo.size.width * CGFloat(progress)))
+                        .animation(.easeInOut(duration: 0.25), value: progress)
+                }
+            }
+            .frame(height: 10)
+        }
     }
 
     // MARK: Scene
@@ -129,50 +158,6 @@ struct ContentView: View {
     private func formattedRate() -> String {
         let rate = monitor.stages.first(where: { $0.id == "nuclearTransitionRate" })?.value ?? 0
         return String(format: "%.2e /s", rate)
-    }
-
-    // MARK: Input controls
-
-    private var inputControls: some View {
-        VStack(spacing: 10) {
-            labeledSlider("Deuterium Loading (D/Pd)",
-                          value: $monitor.inputs.deuteriumToPalladiumRatio,
-                          range: 0.0...0.95,
-                          format: "%.2f")
-
-            labeledSlider("Temperature (K)",
-                          value: $monitor.inputs.temperatureKelvin,
-                          range: 273.0...373.0,
-                          format: "%.0f")
-
-            labeledSlider("Applied Frequency (Hz, ×10¹⁸)",
-                          value: Binding(
-                            get: { monitor.inputs.appliedFrequencyHz / 1e18 },
-                            set: { monitor.inputs.appliedFrequencyHz = $0 * 1e18 }
-                          ),
-                          range: 5.0...9.0,
-                          format: "%.3f")
-
-            labeledSlider("Electromagnetic Coupling Coefficient",
-                          value: $monitor.inputs.couplingCoefficient,
-                          range: 0.0...1.5,
-                          format: "%.2f")
-        }
-        .padding(.horizontal)
-        .padding(.bottom, 10)
-        .padding(.top, 4)
-        .background(Color(uiColor: .systemBackground))
-    }
-
-    private func labeledSlider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, format: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text(title).font(.caption)
-                Spacer()
-                Text(String(format: format, value.wrappedValue)).font(.caption.monospaced())
-            }
-            Slider(value: value, in: range)
-        }
     }
 }
 

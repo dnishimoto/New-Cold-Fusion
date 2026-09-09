@@ -398,6 +398,18 @@ final class QRTLColdFusionMonitor: ObservableObject {
         add("transitionFraction", "QRTL Transition Fraction", transitionFraction * 100.0, "%",
             "Share of the available excitation population undergoing successful transitions.", .nuclearTransition)
 
+        // ---- Fusion threshold progress ---------------------------------------
+        // How close the current drive condition is to fully realizing the
+        // 28.4 MeV QRTL fusion transition: the transition only reaches its
+        // full modeled energy release when the shell is driven on-resonance
+        // with full coherence and fidelity.
+        let fusionThresholdProgressFraction = max(0.0, min(1.0, lorentzianResponse * inputs.resonanceCoherence * inputs.resonanceFidelity))
+        let effectiveTransitionEnergyMeV = fusionThresholdProgressFraction * inputs.transitionEnergyMeV
+        add("fusionThresholdProgress", "Fusion Threshold Progress", fusionThresholdProgressFraction * 100.0, "%",
+            "How close the drive condition is to the full 28.4 MeV QRTL fusion transition.", .nuclearTransition)
+        add("effectiveTransitionEnergy", "Effective Transition Energy", effectiveTransitionEnergyMeV, "MeV",
+            "Currently realized share of the 28.4 MeV target transition energy.", .nuclearTransition)
+
         // ---- 39. Nuclear transition energy (fixed model requirement) --------
         add("nuclearTransitionEnergyMeV", "QRTL Nuclear Transition Energy", inputs.transitionEnergyMeV, "MeV",
             "Model-required energy released per successful QRTL fusion transition.", .nuclearTransition)
@@ -459,4 +471,14 @@ final class QRTLColdFusionMonitor: ObservableObject {
     }
 
     var isNetPositive: Bool { netUsablePowerWatts > 0 }
+
+    /// 0...1 progress toward fully realizing the 28.4 MeV QRTL fusion transition.
+    var fusionThresholdProgress: Double {
+        (stages.first(where: { $0.id == "fusionThresholdProgress" })?.value ?? 0) / 100.0
+    }
+
+    /// Currently realized share of the 28.4 MeV target transition energy, in MeV.
+    var effectiveTransitionEnergyMeV: Double {
+        stages.first(where: { $0.id == "effectiveTransitionEnergy" })?.value ?? 0
+    }
 }
