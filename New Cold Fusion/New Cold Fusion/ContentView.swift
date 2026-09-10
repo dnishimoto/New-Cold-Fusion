@@ -1,13 +1,4 @@
-//
-//  ContentView.swift
-//  QRTL Palladium-Deuterium Cold Fusion Pipeline
-//
-//  Inventor: David S. Nishimoto
-//  Copyright: 2026
-//
-//  Drop-in SwiftUI ContentView. Add QRTLColdFusionModel.swift to the same
-//  target. No third-party dependencies beyond SwiftUI + SceneKit.
-//
+
 
 import SwiftUI
 import SceneKit
