@@ -385,7 +385,7 @@ final class New_Cold_FusionTests: XCTestCase {
             180.0e9
 
         let deuteriumPressureTerm =
-            2.4e9 * 0.85
+            2.4e10 * 0.85
 
         let expected =
             (

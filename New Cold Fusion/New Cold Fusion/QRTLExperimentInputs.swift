@@ -73,7 +73,7 @@ struct QRTLExperimentInputs {
     var deuteriumToPalladiumRatio: Double = 0.85          // D/Pd loading, 0...~0.95
     var temperatureKelvin: Double = 313.0                  // ~40 C electrolysis bath
     var effectiveBulkModulusGPa: Double = 180.0            // Pd effective bulk modulus
-    var deuteriumPressureCoefficient: Double = 2.4e9       // Pa per unit loading
+    var deuteriumPressureCoefficient: Double = 2.4e10       // Pa per unit loading
 
     // QRTL shell parameters
     var shellStiffness: Double = 1.0                       // effective QRTL stiffness (model units)

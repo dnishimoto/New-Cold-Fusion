@@ -175,7 +175,6 @@ final class QRTLColdFusionMonitor: ObservableObject {
             _ summary: String,
             _ section: PipelineSection
         ) {
-
             results.append(
                 PipelineStageResult(
                     id: id,
@@ -185,7 +184,6 @@ final class QRTLColdFusionMonitor: ObservableObject {
                     summary: summary
                 )
             )
-
             map[id] = section
         }
 
@@ -327,19 +325,72 @@ final class QRTLColdFusionMonitor: ObservableObject {
         // 4. Equations of Motion
         // ================================================================
 
-        let motionAmplitude =
-            latticeActionDensity
-            / (
-                1.0
-                + inputs.nonlinearCoefficient
+        let motionDenominator =
+            1.0 + inputs.nonlinearCoefficient
+
+        // Diagnose an invalid denominator before performing the division.
+        if motionDenominator <= 0.0 {
+            assertionFailure(
+                "QRTL error: equations-of-motion denominator must be > 0. " +
+                "Value = \(motionDenominator)"
             )
+
+            print(
+                "⚠️ QRTL ERROR: Invalid motion denominator = " +
+                "\(motionDenominator). " +
+                "Check nonlinearCoefficient."
+            )
+        }
+
+        let motionAmplitude =
+            motionDenominator > 0.0
+            ? latticeActionDensity / motionDenominator
+            : 0.0
+
+        // Preserve the raw value for diagnosis.
+        let rawMotionAmplitude =
+            motionAmplitude
+
+        // Negative amplitude is not silently treated as a valid result.
+        if rawMotionAmplitude < 0.0 {
+            print(
+                "⚠️ QRTL WARNING: Negative motion amplitude detected.\n" +
+                "   effectivePressureGPa = \(effectivePressureGPa)\n" +
+                "   latticeContinuity = \(latticeContinuity)\n" +
+                "   shellStiffness = \(inputs.shellStiffness)\n" +
+                "   latticeActionDensity = \(latticeActionDensity)\n" +
+                "   motionDenominator = \(motionDenominator)\n" +
+                "   rawMotionAmplitude = \(rawMotionAmplitude)\n" +
+                "   Safety clamp applied: 0.0"
+            )
+        }
+        // Safety clamp retained so a negative amplitude cannot propagate
+        // into energy, coordinate, or resonance calculations.
+        let safeMotionAmplitude =
+            max(
+                0.0,
+                rawMotionAmplitude
+            )
+
+        add(
+            "equationsOfMotionRaw",
+            "Raw QRTL Equations-of-Motion Amplitude",
+            rawMotionAmplitude,
+            "model units",
+            rawMotionAmplitude < 0.0
+                ? "WARNING: Upstream calculation produced a negative amplitude. Safety clamp applied to downstream calculations."
+                : "Unclamped amplitude produced by the equations-of-motion calculation.",
+            .latticeDynamics
+        )
 
         add(
             "equationsOfMotion",
             "QRTL Equations-of-Motion Amplitude",
-            motionAmplitude,
+            safeMotionAmplitude,
             "model units",
-            "Resulting oscillation amplitude of the proposed lattice configuration.",
+            rawMotionAmplitude < 0.0
+                ? "Safety-clamped amplitude. The raw negative value remains available diagnostically."
+                : "Resulting non-negative oscillation amplitude of the proposed lattice configuration.",
             .latticeDynamics
         )
 
@@ -350,8 +401,8 @@ final class QRTLColdFusionMonitor: ObservableObject {
         let latticeResonanceEnergy =
             0.5
             * inputs.shellStiffness
-            * motionAmplitude
-            * motionAmplitude
+            * safeMotionAmplitude
+            * safeMotionAmplitude
 
         add(
             "latticeResonanceEnergy",
@@ -370,8 +421,8 @@ final class QRTLColdFusionMonitor: ObservableObject {
             inputs.shellStiffness
             + 3.0
             * inputs.nonlinearCoefficient
-            * motionAmplitude
-            * motionAmplitude
+            * safeMotionAmplitude
+            * safeMotionAmplitude
 
         let isStable =
             stabilitySecondDerivative > 0.0
@@ -414,24 +465,18 @@ final class QRTLColdFusionMonitor: ObservableObject {
         // ================================================================
 
         func shellEnergy(_ x: Double) -> Double {
-
             0.5
             * inputs.shellStiffness
             * x
             * x
-
             + 0.25
             * inputs.nonlinearCoefficient
             * pow(x, 4)
         }
 
+        // The coordinate is derived from the validated amplitude.
         let equilibriumCoordinate =
-            sqrt(
-                max(
-                    0.0,
-                    motionAmplitude
-                )
-            )
+            sqrt(safeMotionAmplitude)
 
         let shellHamiltonianEnergy =
             shellEnergy(
@@ -658,8 +703,7 @@ final class QRTLColdFusionMonitor: ObservableObject {
             )
 
         let energyMomentumResidual =
-            energyMomentumDifference
-                < 1e-6
+            energyMomentumDifference < 1e-6
                 ? 0.0
                 : energyMomentumDifference
 

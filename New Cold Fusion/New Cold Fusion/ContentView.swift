@@ -7,9 +7,10 @@ import SceneKit
 
 struct ContentView: View {
     @StateObject private var monitor = QRTLColdFusionMonitor()
-
+    @State private var showAboutView : Bool = false
+    
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 0) {
                 latticeSceneView
                     .frame(height: 220)
@@ -39,7 +40,20 @@ struct ContentView: View {
                 }
                 .listStyle(.insetGrouped)
             }
-            .navigationTitle("QRTL Cold Fusion Pipeline")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showAboutView = true
+                    } label: {
+                        Image(systemName: "info.circle")
+                    }
+                    .accessibilityLabel("About and Model Information")
+                }
+            }
+            .sheet(isPresented: $showAboutView) {
+                AboutView(monitor: monitor)
+            }
+            .navigationTitle("New Cold Fusion")
             .navigationBarTitleDisplayMode(.inline)
         }
         .navigationViewStyle(.stack)

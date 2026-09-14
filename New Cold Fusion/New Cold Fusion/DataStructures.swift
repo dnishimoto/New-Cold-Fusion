@@ -4,7 +4,32 @@
 import Foundation
 
 
+struct QRTLAmplitudeResult {
+    let rawAmplitude: Double
+    let clampedAmplitude: Double
+    let wasNegative: Bool
+}
 
+func validatedMotionAmplitude(_ motionAmplitude: Double) -> QRTLAmplitudeResult {
+    let wasNegative = motionAmplitude < 0
+
+    if wasNegative {
+        assertionFailure(
+            "QRTL upstream failure: negative motion amplitude = \(motionAmplitude)"
+        )
+
+        print(
+            "⚠️ QRTL WARNING: Negative motion amplitude detected. " +
+            "Raw=\(motionAmplitude). Safety clamp applied."
+        )
+    }
+
+    return QRTLAmplitudeResult(
+        rawAmplitude: motionAmplitude,
+        clampedAmplitude: max(0, motionAmplitude),
+        wasNegative: wasNegative
+    )
+}
 enum PhysicalConstants {
 
     static let planckConstant: Double = 6.62607015e-34       // J·s
