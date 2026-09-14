@@ -160,7 +160,7 @@ final class QRTLColdFusionMonitor: ObservableObject {
         }
     }
 
-    // MARK: - Recompute
+
 
     func recompute() {
 
@@ -328,12 +328,17 @@ final class QRTLColdFusionMonitor: ObservableObject {
         let motionDenominator =
             1.0 + inputs.nonlinearCoefficient
 
-        // Diagnose an invalid denominator before performing the division.
-        if motionDenominator <= 0.0 {
-            assertionFailure(
-                "QRTL error: equations-of-motion denominator must be > 0. " +
-                "Value = \(motionDenominator)"
-            )
+        // Do not assert here. A bad denominator is handled safely so that
+        // recompute() does not intentionally trap the application.
+
+        let motionAmplitude: Double
+
+        if motionDenominator > 0.0 {
+            motionAmplitude =
+                latticeActionDensity
+                / motionDenominator
+        } else {
+            motionAmplitude = 0.0
 
             print(
                 "⚠️ QRTL ERROR: Invalid motion denominator = " +
@@ -342,16 +347,10 @@ final class QRTLColdFusionMonitor: ObservableObject {
             )
         }
 
-        let motionAmplitude =
-            motionDenominator > 0.0
-            ? latticeActionDensity / motionDenominator
-            : 0.0
-
-        // Preserve the raw value for diagnosis.
+        // Preserve the raw signed value for diagnosis.
         let rawMotionAmplitude =
             motionAmplitude
 
-        // Negative amplitude is not silently treated as a valid result.
         if rawMotionAmplitude < 0.0 {
             print(
                 "⚠️ QRTL WARNING: Negative motion amplitude detected.\n" +
@@ -364,8 +363,8 @@ final class QRTLColdFusionMonitor: ObservableObject {
                 "   Safety clamp applied: 0.0"
             )
         }
-        // Safety clamp retained so a negative amplitude cannot propagate
-        // into energy, coordinate, or resonance calculations.
+
+        // Amplitude is treated as a non-negative magnitude downstream.
         let safeMotionAmplitude =
             max(
                 0.0,
@@ -474,7 +473,6 @@ final class QRTLColdFusionMonitor: ObservableObject {
             * pow(x, 4)
         }
 
-        // The coordinate is derived from the validated amplitude.
         let equilibriumCoordinate =
             sqrt(safeMotionAmplitude)
 
@@ -535,17 +533,21 @@ final class QRTLColdFusionMonitor: ObservableObject {
         // 12-14. Shell Geometry
         // ================================================================
 
+        let shellRadiusScale =
+            max(
+                1.0e-9,
+                1.0
+                + inputs.radialShellPressureCoefficientPerGPa
+                * effectivePressureGPa
+            )
+
         let radialShellBoundaryFm =
             inputs.radialShellRadiusFm
             * pow(
                 2.0,
                 1.0 / 3.0
             )
-            * (
-                1.0
-                + inputs.radialShellPressureCoefficientPerGPa
-                * effectivePressureGPa
-            )
+            * shellRadiusScale
 
         add(
             "radialShellBoundary",
@@ -564,11 +566,14 @@ final class QRTLColdFusionMonitor: ObservableObject {
                 3
             )
 
-        let shellEnergyDensity =
-            (
-                excitedEnergy
-                - groundEnergy
+        let shellEnergySeparationModel =
+            max(
+                0.0,
+                excitedEnergy - groundEnergy
             )
+
+        let shellEnergyDensity =
+            shellEnergySeparationModel
             / max(
                 shellVolumeFm3,
                 1e-9
@@ -579,7 +584,7 @@ final class QRTLColdFusionMonitor: ObservableObject {
             "Shell-Energy Density",
             shellEnergyDensity,
             "model units/fm³",
-            "Shell transition energy divided by the enclosed shell volume.",
+            "Non-negative modeled shell transition energy divided by the enclosed shell volume.",
             .shellGeometry
         )
 
@@ -588,11 +593,11 @@ final class QRTLColdFusionMonitor: ObservableObject {
         // ================================================================
 
         let shellEnergySeparationEv =
-            (
-                excitedEnergy
-                - groundEnergy
+            shellEnergySeparationModel
+            * max(
+                0.0,
+                inputs.shellEnergyToEVScale
             )
-            * inputs.shellEnergyToEVScale
 
         let resonanceMassEquivalentKg =
             (
@@ -720,8 +725,26 @@ final class QRTLColdFusionMonitor: ObservableObject {
         // 22. Noether Phase Charge
         // ================================================================
 
+        let safeResonanceCoherence =
+            min(
+                1.0,
+                max(
+                    0.0,
+                    inputs.resonanceCoherence
+                )
+            )
+
+        let safeResonanceFidelity =
+            min(
+                1.0,
+                max(
+                    0.0,
+                    inputs.resonanceFidelity
+                )
+            )
+
         let noetherPhaseCharge =
-            inputs.resonanceCoherence
+            safeResonanceCoherence
             * inputs.couplingCoefficient
 
         add(
@@ -914,7 +937,7 @@ final class QRTLColdFusionMonitor: ObservableObject {
         add(
             "resonanceCoherence",
             "Resonance Coherence",
-            inputs.resonanceCoherence,
+            safeResonanceCoherence,
             "(0-1)",
             "Consistency of the required phase relationship across the modeled system.",
             .resonance
@@ -923,33 +946,67 @@ final class QRTLColdFusionMonitor: ObservableObject {
         add(
             "resonanceFidelity",
             "Resonance Fidelity",
-            inputs.resonanceFidelity,
+            safeResonanceFidelity,
             "(0-1)",
             "How closely the modeled system approaches the ideal resonant condition.",
             .resonance
         )
 
         // ================================================================
-        // 35. QRTL Shell Transition Rate
+        // 35. QRTL Shell Transition Fraction
         // ================================================================
 
-        let shellTransitionRate =
-            lorentzianResponse
-            * inputs.resonanceCoherence
-            * inputs.resonanceFidelity
-            * chargeFlowRatePerSecond
+        let safeMaxResonantTransitionFraction =
+            min(
+                1.0,
+                max(
+                    0.0,
+                    inputs.maxResonantTransitionFraction
+                )
+            )
+
+        let transitionFraction =
+            min(
+                1.0,
+                max(
+                    0.0,
+                    safeMaxResonantTransitionFraction
+                    * lorentzianResponse
+                    * safeResonanceCoherence
+                    * safeResonanceFidelity
+                )
+            )
 
         add(
-            "qrtlTransitionRate",
-            "QRTL (Shell) Transition Rate",
-            shellTransitionRate,
-            "transitions/s",
-            "Modeled frequency of shell-state transitions under the current drive condition.",
+            "transitionFraction",
+            "QRTL Transition Fraction",
+            transitionFraction * 100.0,
+            "%",
+            "Modeled share of the available excitation population undergoing successful QRTL transitions.",
             .nuclearTransition
         )
 
         // ================================================================
-        // 36-37. Matrix Element / Enhancement
+        // 36. QRTL Shell Transition Rate
+        //
+        // THIS IS NOW PART OF THE POWER PIPELINE.
+        // ================================================================
+
+        let qrtlTransitionRate =
+            chargeFlowRatePerSecond
+            * transitionFraction
+
+        add(
+            "qrtlTransitionRate",
+            "QRTL (Shell) Transition Rate",
+            qrtlTransitionRate,
+            "transitions/s",
+            "QRTL-derived transition rate generated from charge flow, resonance response, coherence, fidelity, and the configured transition fraction.",
+            .nuclearTransition
+        )
+
+        // ================================================================
+        // 37-38. Matrix Element / Enhancement
         // ================================================================
 
         let enhancementFunction =
@@ -958,7 +1015,7 @@ final class QRTLColdFusionMonitor: ObservableObject {
                 1.0
                 + emCoupling
                 * lorentzianResponse
-                * inputs.resonanceCoherence
+                * safeResonanceCoherence
             )
 
         add(
@@ -971,8 +1028,11 @@ final class QRTLColdFusionMonitor: ObservableObject {
         )
 
         let enhancementFactor =
-            enhancementFunction
-            * enhancementFunction
+            max(
+                0.0,
+                enhancementFunction
+                * enhancementFunction
+            )
 
         add(
             "nuclearEnhancementFactor",
@@ -984,25 +1044,26 @@ final class QRTLColdFusionMonitor: ObservableObject {
         )
 
         // ================================================================
-        // 38. Transition Fraction
+        // 39. Effective QRTL Transition Rate
+        //
+        // ENHANCEMENT NOW ACTUALLY MODIFIES THE RATE.
         // ================================================================
 
-        let transitionFraction =
-            inputs.maxResonantTransitionFraction
-            * lorentzianResponse
-            * inputs.resonanceCoherence
+        let enhancedQRTLTransitionRate =
+            qrtlTransitionRate
+            * enhancementFactor
 
         add(
-            "transitionFraction",
-            "QRTL Transition Fraction",
-            transitionFraction * 100.0,
-            "%",
-            "Modeled share of the available excitation population undergoing successful transitions.",
+            "enhancedQRTLTransitionRate",
+            "Enhanced QRTL Transition Rate",
+            enhancedQRTLTransitionRate,
+            "transitions/s",
+            "QRTL shell transition rate after application of the modeled nuclear enhancement factor.",
             .nuclearTransition
         )
 
         // ================================================================
-        // Fusion Threshold Progress
+        // 40. Fusion Threshold Progress
         // ================================================================
 
         let fusionThresholdProgressFraction =
@@ -1011,14 +1072,17 @@ final class QRTLColdFusionMonitor: ObservableObject {
                 min(
                     1.0,
                     lorentzianResponse
-                    * inputs.resonanceCoherence
-                    * inputs.resonanceFidelity
+                    * safeResonanceCoherence
+                    * safeResonanceFidelity
                 )
             )
 
         let effectiveTransitionEnergyMeV =
             fusionThresholdProgressFraction
-            * inputs.transitionEnergyMeV
+            * max(
+                0.0,
+                inputs.transitionEnergyMeV
+            )
 
         add(
             "fusionThresholdProgress",
@@ -1039,20 +1103,26 @@ final class QRTLColdFusionMonitor: ObservableObject {
         )
 
         // ================================================================
-        // 39. Nuclear Transition Energy
+        // 41. Nuclear Transition Energy
         // ================================================================
+
+        let safeTransitionEnergyMeV =
+            max(
+                0.0,
+                inputs.transitionEnergyMeV
+            )
 
         add(
             "nuclearTransitionEnergyMeV",
             "QRTL Nuclear Transition Energy",
-            inputs.transitionEnergyMeV,
+            safeTransitionEnergyMeV,
             "MeV",
             "Proposed QRTL model transition energy per successful transition.",
             .nuclearTransition
         )
 
         let transitionEnergyJoules =
-            inputs.transitionEnergyMeV
+            safeTransitionEnergyMeV
             * 1.0e6
             * PhysicalConstants.electronVoltInJoules
 
@@ -1066,13 +1136,22 @@ final class QRTLColdFusionMonitor: ObservableObject {
         )
 
         // ================================================================
-        // 40-41. Recovery Dynamics
+        // 42-43. Recovery Dynamics
         // ================================================================
 
         let recoveryFactor =
-            exp(
-                -inputs.meanLifetimeSeconds
-                * 1e9
+            min(
+                1.0,
+                max(
+                    0.0,
+                    exp(
+                        -max(
+                            0.0,
+                            inputs.meanLifetimeSeconds
+                        )
+                        * 1e9
+                    )
+                )
             )
 
         add(
@@ -1094,12 +1173,13 @@ final class QRTLColdFusionMonitor: ObservableObject {
         )
 
         // ================================================================
-        // 42-43. Transition Rate / Gross Power
+        // 44. Nuclear Reaction Rate
+        //
+        // THIS NO LONGER BYPASSES QRTL.
         // ================================================================
 
         let nuclearTransitionRate =
-            chargeFlowRatePerSecond
-            * transitionFraction
+            enhancedQRTLTransitionRate
             * recoveryFactor
 
         add(
@@ -1107,9 +1187,22 @@ final class QRTLColdFusionMonitor: ObservableObject {
             "Nuclear Transition Rate",
             nuclearTransitionRate,
             "transitions/s",
-            "Modeled number of proposed nuclear transitions occurring per second.",
+            "Reaction rate derived directly from the QRTL transition rate, QRTL enhancement factor, and recovery dynamics.",
             .nuclearTransition
         )
+
+        // ================================================================
+        // 45. Gross Power
+        //
+        // POWER NOW COMES FROM:
+        //
+        // QRTL transition rate
+        // × enhancement
+        // × recovery
+        // × transition energy
+        //
+        // There is no independent 20.3 kW shortcut here.
+        // ================================================================
 
         let grossPowerWatts =
             nuclearTransitionRate
@@ -1120,12 +1213,12 @@ final class QRTLColdFusionMonitor: ObservableObject {
             "Nuclear Energy Production (Gross)",
             grossPowerWatts,
             "W",
-            "Modeled transition rate multiplied by configured transition energy.",
+            "Modeled QRTL-derived reaction rate multiplied by the configured transition energy.",
             .powerOutput
         )
 
         // ================================================================
-        // 44-46. Recycling / Output
+        // 46-48. Recycling / Output
         // ================================================================
 
         let recycledFraction =
@@ -1165,9 +1258,18 @@ final class QRTLColdFusionMonitor: ObservableObject {
             .powerOutput
         )
 
+        let safeElectricalConversionEfficiency =
+            min(
+                1.0,
+                max(
+                    0.0,
+                    inputs.electricalConversionEfficiency
+                )
+            )
+
         let electricalOutputWatts =
             thermalOutputWatts
-            * inputs.electricalConversionEfficiency
+            * safeElectricalConversionEfficiency
 
         add(
             "electricalOutput",
@@ -1178,9 +1280,18 @@ final class QRTLColdFusionMonitor: ObservableObject {
             .powerOutput
         )
 
+        // Net power remains signed intentionally.
+        // A negative result means apparatus input exceeds modeled output.
+
+        let apparatusInputPowerWatts =
+            max(
+                0.0,
+                inputs.apparatusInputPowerWatts
+            )
+
         let netUsablePowerWatts =
             electricalOutputWatts
-            - inputs.apparatusInputPowerWatts
+            - apparatusInputPowerWatts
 
         add(
             "netUsablePower",
@@ -1199,59 +1310,5 @@ final class QRTLColdFusionMonitor: ObservableObject {
         self.stages = results
         self.lastUpdated = Date()
     }
-
-    // MARK: Convenience accessors
-
-    var netUsablePowerWatts: Double {
-
-        stages.first(
-            where: {
-                $0.id == "netUsablePower"
-            }
-        )?.value ?? 0
-    }
-
-    var resonanceFrequencyHz: Double {
-
-        stages.first(
-            where: {
-                $0.id == "resonanceFrequency"
-            }
-        )?.value ?? 0
-    }
-
-    var deuteriumLoadingPercent: Double {
-
-        inputs.deuteriumToPalladiumRatio
-        * 100.0
-    }
-
-    var isNetPositive: Bool {
-
-        netUsablePowerWatts > 0
-    }
-
-    /// 0...1 progress toward the configured QRTL transition.
-
-    var fusionThresholdProgress: Double {
-
-        (
-            stages.first(
-                where: {
-                    $0.id == "fusionThresholdProgress"
-                }
-            )?.value ?? 0
-        ) / 100.0
-    }
-
-    /// Currently realized modeled transition energy in MeV.
-
-    var effectiveTransitionEnergyMeV: Double {
-
-        stages.first(
-            where: {
-                $0.id == "effectiveTransitionEnergy"
-            }
-        )?.value ?? 0
-    }
+  
 }
