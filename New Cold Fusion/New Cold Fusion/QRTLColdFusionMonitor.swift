@@ -29,7 +29,38 @@ final class QRTLColdFusionMonitor: ObservableObject {
     // MARK: Section lookup
 
     private var sectionMap: [String: PipelineSection] = [:]
-
+    var resonanceFrequencyHz: Double {
+        stages.first(where: {
+            $0.id == "resonanceFrequency"
+        })?.value ?? 0.0
+    }
+    
+    var effectiveTransitionEnergyMeV: Double {
+        stages.first(where: {
+            $0.id == "effectiveTransitionEnergy"
+        })?.value ?? 0.0
+    }
+    var netUsablePowerWatts: Double {
+        stages.first(where: {
+            $0.id == "netUsablePower"
+        })?.value ?? 0.0
+    }
+    
+    var isNetPositive: Bool {
+        netUsablePowerWatts > 0.0
+    }
+    var deuteriumLoadingPercent: Double {
+        max(
+            0.0,
+            inputs.deuteriumToPalladiumRatio
+        ) * 100.0
+    }
+    
+    var fusionThresholdProgress: Double {
+        stages.first(where: {
+            $0.id == "fusionThresholdProgress"
+        })?.value ?? 0.0
+    }
     // MARK: Initialization
 
     init(inputs: QRTLExperimentInputs = QRTLExperimentInputs()) {
@@ -52,20 +83,51 @@ final class QRTLColdFusionMonitor: ObservableObject {
     // MARK: Simulation
 
     func startSimulation() {
-
         guard !isRunning else {
             return
         }
 
-        isRunning = true
-        elapsedSimulationTime = 0
-        cumulativeEnergyJoules = 0
+        // Recalculate the complete QRTL pipeline first.
+        // This ensures resonanceFrequency is current.
+        recompute()
 
+        // resonanceFrequency is created by recompute().
+        guard let resonanceFrequencyHz =
+            stages.first(where: {
+                $0.id == "resonanceFrequency"
+            })?.value
+        else {
+            print(
+                "⚠️ QRTL ERROR: resonanceFrequency was not produced by recompute()."
+            )
+            return
+        }
+
+        guard resonanceFrequencyHz.isFinite,
+              resonanceFrequencyHz > 0.0
+        else {
+            print(
+                "⚠️ QRTL ERROR: Invalid resonance frequency = " +
+                "\(resonanceFrequencyHz) Hz"
+            )
+            return
+        }
+
+        isRunning = true
+        elapsedSimulationTime = 0.0
+        cumulativeEnergyJoules = 0.0
+
+        // Start the applied frequency exactly at the
+        // currently calculated QRTL resonance.
         baseAppliedFrequencyHz = resonanceFrequencyHz
+        inputs.appliedFrequencyHz = resonanceFrequencyHz
 
         simulationTimerCancellable =
             Timer.publish(
-                every: inputs.simulationTickIntervalSeconds,
+                every: max(
+                    inputs.simulationTickIntervalSeconds,
+                    1e-9
+                ),
                 on: .main,
                 in: .common
             )
@@ -74,6 +136,7 @@ final class QRTLColdFusionMonitor: ObservableObject {
                 self?.advanceSimulation()
             }
     }
+
 
     func stopSimulation() {
 
@@ -160,8 +223,6 @@ final class QRTLColdFusionMonitor: ObservableObject {
         }
     }
 
-
-
     func recompute() {
 
         var results: [PipelineStageResult] = []
@@ -184,6 +245,7 @@ final class QRTLColdFusionMonitor: ObservableObject {
                     summary: summary
                 )
             )
+
             map[id] = section
         }
 
@@ -323,73 +385,91 @@ final class QRTLColdFusionMonitor: ObservableObject {
 
         // ================================================================
         // 4. Equations of Motion
+        //
+        // IMPORTANT:
+        //
+        // The lattice response remains signed.
+        //
+        // Negative motion amplitude is interpreted as a compressive /
+        // opposite-direction lattice response, not as zero excitation.
+        //
+        // The shell-energy model uses the magnitude of that response.
         // ================================================================
 
         let motionDenominator =
             1.0 + inputs.nonlinearCoefficient
 
-        // Do not assert here. A bad denominator is handled safely so that
-        // recompute() does not intentionally trap the application.
-
-        let motionAmplitude: Double
+        let signedMotionAmplitude: Double
 
         if motionDenominator > 0.0 {
-            motionAmplitude =
+            signedMotionAmplitude =
                 latticeActionDensity
                 / motionDenominator
         } else {
-            motionAmplitude = 0.0
+            signedMotionAmplitude = 0.0
 
             print(
-                "⚠️ QRTL ERROR: Invalid motion denominator = " +
-                "\(motionDenominator). " +
-                "Check nonlinearCoefficient."
+                "⚠️ QRTL ERROR: Invalid motion denominator = "
+                + "\(motionDenominator). "
+                + "Check nonlinearCoefficient."
             )
         }
 
-        // Preserve the raw signed value for diagnosis.
-        let rawMotionAmplitude =
-            motionAmplitude
+        // The shell Hamiltonian depends on even powers of the
+        // displacement coordinate, so shell excitation is based
+        // on displacement magnitude rather than direction.
+        let shellExcitationAmplitude =
+            abs(signedMotionAmplitude)
 
-        if rawMotionAmplitude < 0.0 {
+        if !signedMotionAmplitude.isFinite ||
+           !shellExcitationAmplitude.isFinite {
+
             print(
-                "⚠️ QRTL WARNING: Negative motion amplitude detected.\n" +
-                "   effectivePressureGPa = \(effectivePressureGPa)\n" +
-                "   latticeContinuity = \(latticeContinuity)\n" +
-                "   shellStiffness = \(inputs.shellStiffness)\n" +
-                "   latticeActionDensity = \(latticeActionDensity)\n" +
-                "   motionDenominator = \(motionDenominator)\n" +
-                "   rawMotionAmplitude = \(rawMotionAmplitude)\n" +
-                "   Safety clamp applied: 0.0"
+                """
+                ⚠️ QRTL ERROR: Invalid lattice motion.
+
+                signedMotionAmplitude = \(signedMotionAmplitude)
+                shellExcitationAmplitude = \(shellExcitationAmplitude)
+                """
             )
         }
 
-        // Amplitude is treated as a non-negative magnitude downstream.
-        let safeMotionAmplitude =
-            max(
-                0.0,
-                rawMotionAmplitude
+        if signedMotionAmplitude < 0.0 {
+            print(
+                """
+                ⚠️ QRTL LATTICE RESPONSE
+
+                effectivePressureGPa = \(effectivePressureGPa)
+                latticeContinuity = \(latticeContinuity)
+                shellStiffness = \(inputs.shellStiffness)
+                latticeActionDensity = \(latticeActionDensity)
+                motionDenominator = \(motionDenominator)
+                signedMotionAmplitude = \(signedMotionAmplitude)
+                shellExcitationAmplitude = \(shellExcitationAmplitude)
+
+                Negative response is interpreted as compressive /
+                opposite-direction lattice displacement.
+                """
             )
+        }
 
         add(
             "equationsOfMotionRaw",
-            "Raw QRTL Equations-of-Motion Amplitude",
-            rawMotionAmplitude,
+            "Signed QRTL Equations-of-Motion Amplitude",
+            signedMotionAmplitude,
             "model units",
-            rawMotionAmplitude < 0.0
-                ? "WARNING: Upstream calculation produced a negative amplitude. Safety clamp applied to downstream calculations."
-                : "Unclamped amplitude produced by the equations-of-motion calculation.",
+            signedMotionAmplitude < 0.0
+                ? "Negative value represents a compressive or opposite-direction lattice response. The sign is preserved for diagnostics."
+                : "Signed amplitude produced by the equations-of-motion calculation.",
             .latticeDynamics
         )
 
         add(
             "equationsOfMotion",
-            "QRTL Equations-of-Motion Amplitude",
-            safeMotionAmplitude,
+            "QRTL Shell Excitation Amplitude",
+            shellExcitationAmplitude,
             "model units",
-            rawMotionAmplitude < 0.0
-                ? "Safety-clamped amplitude. The raw negative value remains available diagnostically."
-                : "Resulting non-negative oscillation amplitude of the proposed lattice configuration.",
+            "Magnitude of the signed lattice response used by the QRTL shell-energy calculation.",
             .latticeDynamics
         )
 
@@ -400,8 +480,8 @@ final class QRTLColdFusionMonitor: ObservableObject {
         let latticeResonanceEnergy =
             0.5
             * inputs.shellStiffness
-            * safeMotionAmplitude
-            * safeMotionAmplitude
+            * shellExcitationAmplitude
+            * shellExcitationAmplitude
 
         add(
             "latticeResonanceEnergy",
@@ -420,8 +500,8 @@ final class QRTLColdFusionMonitor: ObservableObject {
             inputs.shellStiffness
             + 3.0
             * inputs.nonlinearCoefficient
-            * safeMotionAmplitude
-            * safeMotionAmplitude
+            * shellExcitationAmplitude
+            * shellExcitationAmplitude
 
         let isStable =
             stabilitySecondDerivative > 0.0
@@ -474,7 +554,7 @@ final class QRTLColdFusionMonitor: ObservableObject {
         }
 
         let equilibriumCoordinate =
-            sqrt(safeMotionAmplitude)
+            sqrt(shellExcitationAmplitude)
 
         let shellHamiltonianEnergy =
             shellEnergy(
@@ -988,8 +1068,6 @@ final class QRTLColdFusionMonitor: ObservableObject {
 
         // ================================================================
         // 36. QRTL Shell Transition Rate
-        //
-        // THIS IS NOW PART OF THE POWER PIPELINE.
         // ================================================================
 
         let qrtlTransitionRate =
@@ -1045,8 +1123,6 @@ final class QRTLColdFusionMonitor: ObservableObject {
 
         // ================================================================
         // 39. Effective QRTL Transition Rate
-        //
-        // ENHANCEMENT NOW ACTUALLY MODIFIES THE RATE.
         // ================================================================
 
         let enhancedQRTLTransitionRate =
@@ -1174,8 +1250,6 @@ final class QRTLColdFusionMonitor: ObservableObject {
 
         // ================================================================
         // 44. Nuclear Reaction Rate
-        //
-        // THIS NO LONGER BYPASSES QRTL.
         // ================================================================
 
         let nuclearTransitionRate =
@@ -1193,15 +1267,6 @@ final class QRTLColdFusionMonitor: ObservableObject {
 
         // ================================================================
         // 45. Gross Power
-        //
-        // POWER NOW COMES FROM:
-        //
-        // QRTL transition rate
-        // × enhancement
-        // × recovery
-        // × transition energy
-        //
-        // There is no independent 20.3 kW shortcut here.
         // ================================================================
 
         let grossPowerWatts =
@@ -1300,6 +1365,38 @@ final class QRTLColdFusionMonitor: ObservableObject {
             "W",
             "Modeled electrical output minus configured apparatus input power.",
             .powerOutput
+        )
+
+        // ================================================================
+        // Final QRTL diagnostics
+        // ================================================================
+
+        print(
+            """
+            🔬 QRTL MOTION DIAGNOSTIC
+
+            effectivePressurePa = \(effectivePressurePa)
+            effectivePressureGPa = \(effectivePressureGPa)
+            latticeContinuity = \(latticeContinuity)
+            shellStiffness = \(inputs.shellStiffness)
+            latticeActionDensity = \(latticeActionDensity)
+            nonlinearCoefficient = \(inputs.nonlinearCoefficient)
+            motionDenominator = \(motionDenominator)
+
+            signedMotionAmplitude = \(signedMotionAmplitude)
+            shellExcitationAmplitude = \(shellExcitationAmplitude)
+
+            equilibriumCoordinate = \(equilibriumCoordinate)
+            groundCoordinate = \(groundCoordinate)
+            excitedCoordinate = \(excitedCoordinate)
+
+            groundEnergy = \(groundEnergy)
+            excitedEnergy = \(excitedEnergy)
+
+            shellEnergySeparationModel = \(shellEnergySeparationModel)
+            shellEnergySeparationEv = \(shellEnergySeparationEv)
+            resonanceFrequencyHz = \(resonanceFrequencyHz)
+            """
         )
 
         // ================================================================

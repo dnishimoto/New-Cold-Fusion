@@ -609,7 +609,7 @@ struct AboutView: View {
             title: "Predicted Results",
             icon: "chart.bar.xaxis"
         ) {
-
+          
             predictionCard(
                 title: "D/Pd Loading",
                 value: format(monitor.deuteriumLoadingPercent),
